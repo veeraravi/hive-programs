@@ -1,0 +1,28 @@
+
+# Define the schema for the nested structure
+prescriber_rec_schema = StructType([
+    StructField("pbr_dea_id", StringType(), True),
+    StructField("pbr_npi", StringType(), True),
+    StructField("pbr_first_nm", StringType(), True),
+    StructField("pbr_mid_init_nm", StringType(), True),
+    StructField("pbr_last_nm", StringType(), True),
+])
+
+# Define the outer schema
+prescriber_outer_schema = StructType([
+    StructField("d_prescriber_rec", prescriber_rec_schema, True),
+])
+
+
+# Define the schema for the nested structure
+reject_code_rec_schema = StructType([
+    StructField("dxf_sk", IntegerType(), True),
+    StructField("rej_cd", StringType(), True),
+    StructField("rej_cd_desc", StringType(), True),
+    StructField("src_env_sk", StringType(), True)
+])
+
+# Define the outer schema
+reject_code_outer_schema = StructType([
+    StructField("1_reject_code_rec", reject_code_rec_schema, True),
+])
