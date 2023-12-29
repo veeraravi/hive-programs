@@ -26,3 +26,20 @@ reject_code_rec_schema = StructType([
 reject_code_outer_schema = StructType([
     StructField("1_reject_code_rec", reject_code_rec_schema, True),
 ])
+
+
+#!/bin/bash
+
+# Hive database name
+DATABASE_NAME="your_database_name"
+
+# Get the list of tables with names containing "_tmp"
+TABLES=$(hive -e "USE $DATABASE_NAME; SHOW TABLES LIKE '*_tmp';")
+
+# Iterate through the tables and get their paths
+while read -r TABLE_NAME; do
+  TABLE_PATH=$(hive -e "DESCRIBE EXTENDED $DATABASE_NAME.$TABLE_NAME;" | grep "Location:" | awk '{print $2}')
+  echo "Table: $DATABASE_NAME.$TABLE_NAME, Path: $TABLE_PATH"
+done <<< "$TABLES"
+
+
