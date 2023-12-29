@@ -42,4 +42,31 @@ while read -r TABLE_NAME; do
   echo "Table: $DATABASE_NAME.$TABLE_NAME, Path: $TABLE_PATH"
 done <<< "$TABLES"
 
+#!/bin/bash
+
+# Hive database name
+DATABASE_NAME="your_database_name"
+
+# Create a temporary Hive script file
+SCRIPT_FILE="/tmp/describe_script.hql"
+
+# Get the list of tables with names containing "_tmp"
+TABLES=$(hive -e "USE $DATABASE_NAME; SHOW TABLES LIKE '*_tmp';")
+
+# Iterate through the tables and get their paths
+while read -r TABLE_NAME; do
+  # Generate a Hive script to describe the formatted table
+  echo "USE $DATABASE_NAME;" > "$SCRIPT_FILE"
+  echo "DESCRIBE FORMATTED $TABLE_NAME;" >> "$SCRIPT_FILE"
+
+  # Run the script and capture the output
+  TABLE_DESC=$(hive -f "$SCRIPT_FILE")
+
+  # Extract the table path from the output
+  TABLE_PATH=$(echo "$TABLE_DESC" | grep "Location:" | awk '{print $2}')
+  echo "Table: $DATABASE_NAME.$TABLE_NAME, Path: $TABLE_PATH"
+done <<< "$TABLES"
+
+# Remove the temporary Hive script file
+rm -f "$SCRIPT_FILE"
 
