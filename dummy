@@ -70,3 +70,48 @@ done <<< "$TABLES"
 # Remove the temporary Hive script file
 rm -f "$SCRIPT_FILE"
 
+
+=============================================
+
+#!/bin/bash
+
+# Check if the required parameters are provided
+if [ "$#" -ne 2 ]; then
+  echo "Usage: $0 <hdfs_directory_path> <threshold_days>"
+  exit 1
+fi
+
+# Set the HDFS directory path
+HDFS_DIR="$1"
+
+# Set the threshold time in seconds
+THRESHOLD_DAYS="$2"
+THRESHOLD_TIME=$((THRESHOLD_DAYS * 24 * 60 * 60))
+
+# Get the current time in seconds since the epoch
+CURRENT_TIME=$(date +%s)
+
+# List files in the HDFS directory with their modification time and path
+hadoop fs -ls -R "$HDFS_DIR" | while read -r line; do
+  # Extract modification time and file path
+  mod_time=$(echo "$line" | awk '{print $6, $7}')
+  file_path=$(echo "$line" | awk '{print $8}')
+
+  # Convert modification time to seconds since the epoch
+  mod_time=$(date -d "$mod_time" +%s)
+
+  # Calculate the age of the file in seconds
+  age=$((CURRENT_TIME - mod_time))
+
+  # Check if the file is older than the specified threshold
+  if [ "$age" -gt "$THRESHOLD_TIME" ]; then
+    echo "Deleting file: $file_path"
+    # Uncomment the line below to actually delete the file
+    # hadoop fs -rm "$file_path"
+  fi
+done
+
+
+
+
+
