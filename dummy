@@ -115,3 +115,113 @@ done
 
 
 
+
+
+
+
+def process_abinitio_code(in_data):
+    v_medlimit_service_seq_nbr = ""
+    v_medlimit_dur_rsp_flg = ""
+    v_medlimit_dur_srvc_cd_rsn = ""
+    v_elm_c_e_resp_rsn_flg = ""
+    v_elm_q_r_resp_rsn_flg = ""
+    v_elm_w_aa_resp_rsn_flg = ""
+
+    events = []  # Assuming events is a list that you want to populate
+
+    for i in range(len(in_data.dur_rsp_cd_cntr)):
+        if in_data.dur_rsp_cd_cntr[i] <= 10:
+            events[in_data.dur_rsp_cd_cntr[i] - 1].resp = in_data.dur_rsp_flg[i]
+            events[in_data.dur_rsp_cd_cntr[i] - 1].service = in_data.dur_srvc_nm[i]
+            events[in_data.dur_rsp_cd_cntr[i] - 1].reason_service = in_data.dur_srvc_cd_rsn[i]
+
+        if in_data.dur_srvc_nm[i] == 'MEDLIMIT':
+            v_medlimit_service_seq_nbr += str(in_data.dur_rsp_cd_cntr[i]) + " "
+            v_medlimit_dur_rsp_flg += str(in_data.dur_rsp_flg[i]) + " "
+            v_medlimit_dur_srvc_cd_rsn += str(in_data.dur_srvc_cd_rsn[i]) + " "
+
+            v_elm_c_e_resp_rsn_flg = "Y" if (in_data.dur_rsp_flg[i] == "s" and (in_data.dur_srvc_cd_rsn[i] == "HD" or in_data.dur_srvc_cd_rsn[i] == "HC")) else v_elm_c_e_resp_rsn_flg
+
+            # 2022 condition "DUR Service Code Reason - HD or HC" changed to only "DUR_Service_Code_Reason - HD" now
+            v_elm_q_r_resp_rsn_flg = "Y" if (in_data.dur_rsp_flg[i] == "H" and in_data.dur_srvc_cd_rsn[i] == "HD") else v_elm_q_r_resp_rsn_flg
+            v_elm_w_aa_resp_rsn_flg = "Y" if (in_data.dur_rsp_flg[i] == "H" and in_data.dur_srvc_cd_rsn[i] == "MX") else v_elm_w_aa_resp_rsn_flg
+
+    return v_medlimit_service_seq_nbr, v_medlimit_dur_rsp_flg, v_medlimit_dur_srvc_cd_rsn, v_elm_c_e_resp_rsn_flg, v_elm_q_r_resp_rsn_flg, v_elm_w_aa_resp_rsn_flg, events
+
+# Example usage:
+# Replace `your_input_data` with the actual data structure you have
+result = process_abinitio_code(your_input_data)
+# Access the results using the appropriate variables
+print(result[0])  # v_medlimit_service_seq_nbr
+print(result[1])  # v_medlimit_dur_rsp_flg
+# ... and so on
+
+
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, concat_ws
+
+def process_abinitio_code(df):
+    # Initializing variables
+    v_medlimit_service_seq_nbr = ""
+    v_medlimit_dur_rsp_flg = ""
+    v_medlimit_dur_srvc_cd_rsn = ""
+    v_elm_c_e_resp_rsn_flg = ""
+    v_elm_q_r_resp_rsn_flg = ""
+    v_elm_w_aa_resp_rsn_flg = ""
+
+    # Assuming 'events' is a DataFrame that you want to manipulate
+    # This assumes that the 'events' DataFrame already exists or you need to create it
+
+    # Apply transformations to the DataFrame based on your logic
+    df = df.withColumn('resp', col('dur_rsp_flg'))
+    df = df.withColumn('service', col('dur_srvc_nm'))
+    df = df.withColumn('reason_service', col('dur_srvc_cd_rsn'))
+
+    # Apply filtering based on the condition dur_rsp_cd_cntr <= 10
+    df_filtered = df.filter(col('dur_rsp_cd_cntr') <= 10)
+
+    # Concatenate values for MEDLIMIT condition
+    df_medlimit = df.filter(col('dur_srvc_nm') == 'MEDLIMIT')
+    v_medlimit_service_seq_nbr = concat_ws(" ", df_medlimit.select('dur_rsp_cd_cntr').rdd.flatMap(lambda x: x))
+    v_medlimit_dur_rsp_flg = concat_ws(" ", df_medlimit.select('dur_rsp_flg').rdd.flatMap(lambda x: x))
+    v_medlimit_dur_srvc_cd_rsn = concat_ws(" ", df_medlimit.select('dur_srvc_cd_rsn').rdd.flatMap(lambda x: x))
+
+    # Apply conditions for v_elm_c_e_resp_rsn_flg, v_elm_q_r_resp_rsn_flg, v_elm_w_aa_resp_rsn_flg
+    df = df.withColumn('v_elm_c_e_resp_rsn_flg',
+                       when((col('dur_rsp_flg') == 's') & ((col('dur_srvc_cd_rsn') == 'HD') | (col('dur_srvc_cd_rsn') == 'HC')), 'Y')
+                       .otherwise(col('v_elm_c_e_resp_rsn_flg')))
+
+    df = df.withColumn('v_elm_q_r_resp_rsn_flg',
+                       when((col('dur_rsp_flg') == 'H') & (col('dur_srvc_cd_rsn') == 'HD'), 'Y')
+                       .otherwise(col('v_elm_q_r_resp_rsn_flg')))
+
+    df = df.withColumn('v_elm_w_aa_resp_rsn_flg',
+                       when((col('dur_rsp_flg') == 'H') & (col('dur_srvc_cd_rsn') == 'MX'), 'Y')
+                       .otherwise(col('v_elm_w_aa_resp_rsn_flg')))
+
+    # Assuming 'events' is a DataFrame that you want to manipulate
+    # This assumes that the 'events' DataFrame already exists or you need to create it
+    events = df.select('resp', 'service', 'reason_service')
+
+    return v_medlimit_service_seq_nbr, v_medlimit_dur_rsp_flg, v_medlimit_dur_srvc_cd_rsn, \
+           v_elm_c_e_resp_rsn_flg, v_elm_q_r_resp_rsn_flg, v_elm_w_aa_resp_rsn_flg, events
+
+# Example usage:
+# Replace 'your_data_frame' with the actual DataFrame you have
+result = process_abinitio_code(your_data_frame)
+# Access the results using the appropriate variables
+result[0].show()  # v_medlimit_service_seq_nbr
+result[1].show()  # v_medlimit_dur_rsp_flg
+# ... and so on
+
+
+
+
+
+
+
+
+
+
+
