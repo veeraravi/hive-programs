@@ -214,6 +214,55 @@ result = process_abinitio_code(your_data_frame)
 result[0].show()  # v_medlimit_service_seq_nbr
 result[1].show()  # v_medlimit_dur_rsp_flg
 # ... and so on
+------------------------------------------------------------
+
+import org.apache.spark.sql.functions.udf
+
+// Define UDF for the logic
+val processUDF = udf((durRspCdCntr: Seq[Int], durRspFlg: Seq[String], durSrvcNm: String, durSrvcCdRsn: Seq[String]) => {
+  var vMedlimitServiceSeqNbr = ""
+  var vMedlimitDurRspFlg = ""
+  var vMedlimitDurSrvcCdRsn = ""
+  var vElmCERespRsnFlg = ""
+  var vElmQRRespRsnFlg = ""
+  var vElmWAARespRsnFlg = ""
+
+  for (i <- durRspCdCntr.indices) {
+    if (durRspCdCntr(i) <= 10) {
+      // Your first block of logic
+      // Assuming events is a pre-defined array
+      events(durRspCdCntr(i) - 1).resp = durRspFlg(i)
+      events(durRspCdCntr(i) - 1).service = durSrvcNm
+      events(durRspCdCntr(i) - 1).reason_service = durSrvcCdRsn(i)
+    }
+
+    if (durSrvcNm == "MEDLIMIT") {
+      // Your second block of logic
+      vMedlimitServiceSeqNbr = vMedlimitServiceSeqNbr + durRspCdCntr(i) + "|"
+      vMedlimitDurRspFlg = vMedlimitDurRspFlg + durRspFlg(i) + "|"
+      vMedlimitDurSrvcCdRsn = vMedlimitDurSrvcCdRsn + durSrvcCdRsn(i) + "|"
+      vElmCERespRsnFlg = if (durRspFlg(i) == "s" && (durSrvcCdRsn(i) == "HD" || durSrvcCdRsn(i) == "HC")) "Y" else vElmCERespRsnFlg
+      vElmQRRespRsnFlg = if (durRspFlg(i) == "H" && durSrvcCdRsn(i) == "HD") "Y" else vElmQRRespRsnFlg
+      vElmWAARespRsnFlg = if (durRspFlg(i) == "H" && durSrvcCdRsn(i) == "MX") "Y" else vElmWAARespRsnFlg
+    }
+  }
+
+  // Return a tuple of results
+  (vMedlimitServiceSeqNbr, vMedlimitDurRspFlg, vMedlimitDurSrvcCdRsn, vElmCERespRsnFlg, vElmQRRespRsnFlg, vElmWAARespRsnFlg)
+})
+
+// Assuming you have a DataFrame named "yourDataFrame" with the necessary columns
+val resultDataFrame = yourDataFrame.withColumn("processedData", processUDF($"dur_rsp_cd_cntr", $"dur_rsp_flg", $"dur_srvc_nm", $"dur_srvc_cd_rsn"))
+
+// Extract individual columns from the tuple and drop the temporary column
+val finalResultDataFrame = resultDataFrame
+  .withColumn("v_medlimit_service_seq_nbr", $"processedData._1")
+  .withColumn("v_medlimit_dur_rsp_flg", $"processedData._2")
+  .withColumn("v_medlimit_dur_srvc_cd_rsn", $"processedData._3")
+  .withColumn("v_elm_c_e_resp_rsn_flg", $"processedData._4")
+  .withColumn("v_elm_q_r_resp_rsn_flg", $"processedData._5")
+  .withColumn("v_elm_w_aa_resp_rsn_flg", $"processedData._6")
+  .drop("processedData")
 
 
 
