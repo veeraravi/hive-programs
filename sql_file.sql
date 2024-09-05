@@ -2638,6 +2638,353 @@ Removed CTE Syntax: Hive does not fully support CTEs (Common Table Expressions) 
 Make sure to test this query in your Hive environment, as syntax or functionality can vary between different versions of Hive.
 
 
+--------------------------------------------------------NEW CODE-----------------------------------------
+	-- Step 1: Assets without associated contracts
+WITH AssetsWithoutContract AS (
+    SELECT 
+        CP.CUSTOMER_PRODUCT_ID AS counterpartAssetId,
+        CP.MFG_SERIAL_NUM AS counterpartAssetSerialNumber,
+        CP.MANUFACTURER_ID AS counterpartAssetManufacturerId,
+        CP.ITEM_CLASS AS counterpartAssetItemClass,
+        CP.SOURCE_SITE_ID AS counterpartAssetSourceSiteId,
+        CP.CUSTOMER_NUM AS counterpartAssetCustomerNumber
+    FROM 
+        AEAST.CUSTOMER_PRODUCT CP
+    LEFT JOIN 
+        AEENT.CONTRACT_PRODUCT_COVERAGE CPC
+    ON 
+        CP.CUSTOMER_PRODUCT_ID = CPC.CUSTOMER_PRODUCT_ID
+    LEFT JOIN 
+        AEENT.CUSTOMER_CONTRACT CC
+    ON 
+        CC.CUSTOMER_CONTRACT_ID = CPC.CUSTOMER_CONTRACT_ID
+    WHERE 
+        CP.SOURCE_SYS_CREATE_PGM IN ('AC_NG.DS.SW_AS_A.CRI', 'AC_NG.DS.SW_A.CRY', 'AC_NG.DUAL_SRL_INS.ASSET')
+        AND CC.CUSTOMER_CONTRACT_ID IS NULL
+        AND CP.ORDER_NUM = 99999
+        AND CP.SOURCE_SYS_CREATE_DTS BETWEEN '2023-10-01 00:00:00' AND '2023-10-31 23:59:59'
+),
+
+-- Step 2: Lookup original asset
+OriginalAssetLookup AS (
+    SELECT 
+        A.counterpartAssetId,
+        CPR.TO_CUSTOMER_PRODUCT_ID AS originalAssetId
+    FROM 
+        AssetsWithoutContract A
+    LEFT JOIN 
+        AEAST.CUSTOMER_PRODUCT_REL CPR
+    ON 
+        A.counterpartAssetId = CPR.FROM_CUSTOMER_PRODUCT_ID
+        AND CPR.RELATIONSHIP_TYPE_ID = 9
+),
+
+-- Step 3: Contracts associated with the original assets
+ContractsForOriginalAssets AS (
+    SELECT 
+        OAL.counterpartAssetId,
+        OAL.originalAssetId,
+        CASE 
+            WHEN OAL.originalAssetId IS NULL THEN 'Original asset not found'
+            ELSE CC.CUSTOMER_CONTRACT_ID 
+        END AS contractId,
+        CASE 
+            WHEN OAL.originalAssetId IS NULL THEN NULL
+            ELSE CC.ITEM_NUM 
+        END AS contractItemNumber,
+        CASE 
+            WHEN OAL.originalAssetId IS NULL THEN 'Original Asset Without Entitlement'
+            ELSE NULL
+        END AS rootCause
+    FROM 
+        OriginalAssetLookup OAL
+    LEFT JOIN 
+        AEENT.CUSTOMER_CONTRACT CC 
+    ON 
+        OAL.originalAssetId = CC.CUSTOMER_CONTRACT_ID
+    LEFT JOIN 
+        AEENT.CONTRACT_PRODUCT_COVERAGE CPC
+    ON 
+        CC.CUSTOMER_CONTRACT_ID = CPC.CUSTOMER_CONTRACT_ID
+    LEFT JOIN 
+        AEAST.CUSTOMER_PRODUCT CP
+    ON 
+        CPC.CUSTOMER_PRODUCT_ID = CP.CUSTOMER_PRODUCT_ID
+),
+
+-- Step 4: Check if the contract has an agreement
+AgreementCheck AS (
+    SELECT 
+        C.contractId,
+        CASE 
+            WHEN EXISTS (
+                SELECT 1 
+                FROM AEENT.AGREEMENT_CONTRACT AC 
+                WHERE AC.CUSTOMER_CONTRACT_ID = C.contractId
+            ) THEN (
+                SELECT AI.AGREEMENT_IDENTIFIER_VALUE 
+                FROM AEAGR.AGREEMENT_IDENTIFIER AI
+                WHERE AI.AGREEMENT_ID = (
+                    SELECT AGREEMENT_ID 
+                    FROM AEENT.AGREEMENT_CONTRACT 
+                    WHERE CUSTOMER_CONTRACT_ID = C.contractId
+                )
+                AND AI.IDENTIFIER_TYPE_ID IN (111, 112)
+                LIMIT 1
+            )
+            ELSE 'CounterPart Agreement Not Found'
+        END AS counterpartAgreementId
+    FROM 
+        ContractsForOriginalAssets C
+),
+
+-- Step 5: Get source site ID and associated contracts
+CounterpartAgreementSource AS (
+    SELECT 
+        A.counterpartAgreementId,
+        CASE 
+            WHEN A.counterpartAgreementId IS NOT NULL THEN (
+                SELECT AGREEMENT.SOURCE_SITE_ID 
+                FROM AEAGR.AGREEMENT 
+                WHERE AGREEMENT.AGREEMENT_ID = A.counterpartAgreementId
+            )
+            ELSE NULL
+        END AS counterpartAgreementSourceSiteId,
+        CASE 
+            WHEN A.counterpartAgreementId IS NOT NULL THEN (
+                SELECT CUSTOMER_CONTRACT_ID 
+                FROM AEENT.AGREEMENT_CONTRACT 
+                WHERE AGREEMENT_ID = A.counterpartAgreementId
+            )
+            ELSE NULL
+        END AS counterpartAgreementContractId
+    FROM 
+        AgreementCheck A
+),
+
+-- Step 6: Check for missing agreement/asset relationship
+CounterpartAgreementAssetsCheck AS (
+    SELECT 
+        C.counterpartAgreementId,
+        CASE 
+            WHEN NOT EXISTS (
+                SELECT 1 
+                FROM AEENT.AGREEMENT_CONTRACT AC 
+                WHERE AC.AGREEMENT_ID = C.counterpartAgreementId
+            ) THEN 'Missing Agreement/Asset Relationship'
+            WHEN NOT EXISTS (
+                SELECT 1 
+                FROM AEENT.AGREEMENT_CONTRACT AC 
+                JOIN AEENT.CONTRACT_PRODUCT_COVERAGE CPC 
+                ON AC.CUSTOMER_CONTRACT_ID = CPC.CUSTOMER_CONTRACT_ID
+                WHERE AC.AGREEMENT_ID = C.counterpartAgreementId
+                  AND CPC.CUSTOMER_PRODUCT_ID = A.counterpartAssetId
+            ) THEN 'CounterPart Agreement Linked to Non-Mapped Asset'
+            ELSE NULL
+        END AS agreementAssetRootCause
+    FROM 
+        CounterpartAgreementSource C
+    JOIN 
+        AssetsWithoutContract A 
+    ON 
+        1 = 1
+),
+
+-- Step 7: Check for party address record
+PartyLocationCheck AS (
+    SELECT 
+        C.counterpartAgreementId,
+        CASE 
+            WHEN (
+                SELECT COUNT(*) 
+                FROM AEPA.PARTY_ADDRESS_AGREEMENT PAA
+                JOIN AEPA.PARTY_ADDRESS PA 
+                ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+                WHERE PAA.AGREEMENT_ID = C.counterpartAgreementId
+            ) = 0 
+            OR (C.counterpartAgreementSourceSiteId = 6 AND (
+                SELECT COALESCE(PA.UCID, 0) 
+                FROM AEPA.PARTY_ADDRESS_AGREEMENT PAA
+                JOIN AEPA.PARTY_ADDRESS PA 
+                ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+                WHERE PAA.AGREEMENT_ID = C.counterpartAgreementId
+            ) < 1)
+            OR (C.counterpartAgreementSourceSiteId <> 6 AND (
+                SELECT COALESCE(PA.CUSTOMER_NUM, 0) 
+                FROM AEPA.PARTY_ADDRESS_AGREEMENT PAA
+                JOIN AEPA.PARTY_ADDRESS PA 
+                ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+                WHERE PAA.AGREEMENT_ID = C.counterpartAgreementId
+            ) < 1) THEN 'PartyLocation not found'
+            ELSE NULL
+        END AS partyLocationRootCause
+    FROM 
+        CounterpartAgreementSource C
+),
+
+-- Step 8: Check for party address record in the counterpart asset
+CustomerCheckForCounterpartAsset AS (
+    SELECT 
+        A.counterpartAssetId,
+        CASE 
+            WHEN (
+                SELECT COUNT(*) 
+                FROM AEPA.PARTY_ADDRESS_ASSET PAA
+                JOIN AEPA.PARTY_ADDRESS PA 
+                ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+                WHERE PAA.CUSTOMER_PRODUCT_ID = A.counterpartAssetId
+            ) = 0
+            OR (A.counterpartAssetSourceSiteId = 6 AND (
+                SELECT COALESCE(PA.UCID, 0) 
+                FROM AEPA.PARTY_ADDRESS_ASSET PAA
+                JOIN AEPA.PARTY_ADDRESS PA 
+                ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+                WHERE PAA.CUSTOMER_PRODUCT_ID = A.counterpartAssetId
+            ) < 1)
+            OR (A.counterpartAssetSourceSiteId <> 6 AND (
+                SELECT COALESCE(PA.CUSTOMER_NUM, 0) 
+                FROM AEPA.PARTY_ADDRESS_ASSET PAA
+                JOIN AEPA.PARTY_ADDRESS PA 
+                ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+                WHERE PAA.CUSTOMER_PRODUCT_ID = A.counterpartAssetId
+            ) < 1)
+            OR (A.counterpartAssetCustomerNumber IS NULL OR A.counterpartAssetCustomerNumber < 1) THEN 'Customer not found in counterpart asset'
+            ELSE NULL
+        END AS customerRootCause
+    FROM 
+        AssetsWithoutContract A
+),
+
+-- Step 9: Check for item material mapping
+ItemMaterialMappingCheck AS (
+    SELECT 
+        C.contractId,
+        C.contractItemNumber,
+        C.counterpartAgreementSourceSiteId,
+        CASE 
+            WHEN C.counterpartAgreementSourceSiteId = 6 THEN (
+                SELECT EMC_ITEM_NUM 
+                FROM SDR.ITEM_MATERIAL_MAPPING IMM 
+                WHERE IMM.EMC_ITEM_NUM = C.contractItemNumber 
+                AND IMM.APPLICATION_ID = 33
+                AND IMM.ITEM_MATERIAL_MAP_TYPE_ID IN (1, 3, 4, 5, 6)
+                LIMIT 1
+            )
+            ELSE (
+                SELECT ITEM_NUM 
+                FROM SDR.ITEM_MATERIAL_MAPPING IMM 
+                WHERE IMM.ITEM_NUM = C.contractItemNumber 
+                AND IMM.APPLICATION_ID = 33
+                AND IMM.ITEM_MATERIAL_MAP_TYPE_ID IN (1, 3, 4, 5, 6)
+                LIMIT 1
+            )
+        END AS itemMaterialMapping
+    FROM 
+        ContractsForOriginalAssets C
+),
+
+-- Step 10: Check for global item main record
+GlobalItemMainCheck AS (
+    SELECT 
+        I.contractId,
+        I.itemMaterialMapping,
+        I.counterpartAgreementSourceSiteId,
+        CASE 
+            WHEN I.itemMaterialMapping IS NOT NULL AND I.counterpartAgreementSourceSiteId = 6 THEN (
+                SELECT ITEM_NUM 
+                FROM SDR.GLOBAL_ITEM_MAIN 
+                WHERE ITEM_NUM = I.itemMaterialMapping 
+                AND SOURCE_SITE_ID <> 6
+                LIMIT 1
+            )
+            WHEN I.itemMaterialMapping IS NOT NULL AND I.counterpartAgreementSourceSiteId <> 6 THEN (
+                SELECT ITEM_NUM 
+                FROM SDR.GLOBAL_ITEM_MAIN 
+                WHERE ITEM_NUM = I.itemMaterialMapping 
+                AND SOURCE_SITE_ID = 6
+                LIMIT 1
+            )
+            ELSE NULL
+        END AS globalItemMain
+    FROM 
+        ItemMaterialMappingCheck I
+),
+
+-- Step 11: Root cause classification for each contract
+ContractRootCauseClassification AS (
+    SELECT 
+        G.contractId,
+        CASE 
+            WHEN G.itemMaterialMapping IS NULL THEN 'Missing Item Material Mapping'
+            WHEN G.globalItemMain IS NULL THEN 'Missing Global Item Main'
+            WHEN EXISTS (
+                SELECT 1 
+                FROM SDR.DUAL_SERIAL_INSTRUCTION 
+                WHERE ENTITY_TYPE_ID = 1 
+                AND ENTITY_VALUE = G.contractId
+            ) THEN 'Instruction in Error'
+            ELSE NULL
+        END AS rootCause
+    FROM 
+        GlobalItemMainCheck G
+),
+
+-- Step 12: Final root cause determination
+FinalCheck AS (
+    SELECT 
+        C.contractId,
+        CASE 
+            WHEN CRC.rootCause IS NOT NULL THEN CRC.rootCause
+            WHEN EXISTS (
+                SELECT 1 
+                FROM AEENT.AGREEMENT_CONTRACT AC 
+                WHERE AC.CUSTOMER_CONTRACT_ID = C.contractId
+            ) THEN '[AGREEMENT] Other'
+            ELSE 'Other'
+        END AS rootCause
+    FROM 
+        ContractsForOriginalAssets C
+    LEFT JOIN 
+        ContractRootCauseClassification CRC ON C.contractId = CRC.contractId
+)
+
+-- Final selection
+SELECT 
+    A.counterpartAssetId,
+    A.counterpartAssetSerialNumber,
+    A.counterpartAssetManufacturerId,
+    A.counterpartAssetItemClass,
+    A.counterpartAssetSourceSiteId,
+    A.counterpartAssetCustomerNumber,
+    C.contractId,
+    C.contractItemNumber,
+    COALESCE(F.rootCause, '') AS rootCause,
+    ACS.counterpartAgreementId,
+    ACS.counterpartAgreementSourceSiteId,
+    ACS.counterpartAgreementContractId,
+    CAAC.agreementAssetRootCause,
+    PLC.partyLocationRootCause,
+    CCC.customerRootCause,
+    IMM.itemMaterialMapping,
+    F.rootCause AS finalRootCause
+FROM 
+    AssetsWithoutContract A
+LEFT JOIN 
+    ContractsForOriginalAssets C ON A.counterpartAssetId = C.counterpartAssetId
+LEFT JOIN 
+    AgreementCheck AC ON C.contractId = AC.contractId
+LEFT JOIN 
+    CounterpartAgreementSource ACS ON AC.counterpartAgreementId = ACS.counterpartAgreementId
+LEFT JOIN 
+    CounterpartAgreementAssetsCheck CAAC ON ACS.counterpartAgreementId = CAAC.counterpartAgreementId
+LEFT JOIN 
+    PartyLocationCheck PLC ON ACS.counterpartAgreementId = PLC.counterpartAgreementId
+LEFT JOIN 
+    CustomerCheckForCounterpartAsset CCC ON A.counterpartAssetId = CCC.counterpartAssetId
+LEFT JOIN 
+    ItemMaterialMappingCheck IMM ON C.contractId = IMM.contractId
+LEFT JOIN 
+    FinalCheck F ON C.contractId = F.contractId;
 
 
 
