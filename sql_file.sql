@@ -2869,3 +2869,244 @@ LEFT JOIN
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+===================================================================
+WITH AssetsWithoutContract AS (
+    SELECT
+        CP.CUSTOMER_PRODUCT_ID AS counterpartAssetId, 
+        CP.MFG_SERIAL_NUM AS counterpartAssetSerialNumber, 
+        CP.MANUFACTURER_ID AS counterpartAssetManufacturerId, 
+        CP.ITEM_CLASS AS counterpartAssetItemClass, 
+        CP.SOURCE_SITE_ID AS counterpartAssetSourceSiteId, 
+        CP.CUSTOMER_NUM AS counterpartAssetCustomerNumber, 
+        CC.SOURCE_SITE_ID AS contractSourceSiteId
+    FROM 
+        dads_run.svc_customer_product CP
+    LEFT JOIN 
+        dads_run.svc_contract_product_coverage CPC ON CP.CUSTOMER_PRODUCT_ID = CPC.CUSTOMER_PRODUCT_ID
+    LEFT JOIN 
+        dads_run.svc_customer_contract CC ON CC.CUSTOMER_CONTRACT_ID = CPC.CUSTOMER_CONTRACT_ID
+    WHERE 
+        CP.SOURCE_SYS_CREATE_PGM IN ('AC_NG.DS.SW_AS_A.CRI', 'AC_NG.DS.SW_A.CRY', 'AC_NG.DUAL_SRL_INS.ASSET') 
+        AND CC.CUSTOMER_CONTRACT_ID IS NULL
+        AND CP.ORDER_NUM = 99999
+        AND CP.SOURCE_SYS_CREATE_DTS BETWEEN '2023-10-01 00:00:00' AND '2023-10-31 23:59:59'
+),
+
+ContractsForOriginalAssets AS (
+    SELECT
+        A.counterpartAssetId,
+        A.counterpartAssetSerialNumber,
+        A.counterpartAssetManufacturerId,
+        A.counterpartAssetItemClass,
+        A.counterpartAssetSourceSiteId,
+        A.counterpartAssetCustomerNumber,
+        CPR.TO_CUSTOMER_PRODUCT_ID AS originalAssetId
+    FROM 
+        AssetsWithoutContract A
+    LEFT JOIN 
+        dads_run.svc_customer_product_REL CPR ON A.counterpartAssetId = CPR.FROM_CUSTOMER_PRODUCT_ID 
+        AND CPR.RELATIONSHIP_TYPE_ID = 9
+),
+
+AgreementCheck AS (
+    SELECT
+        COA.counterpartAssetId,
+        COA.counterpartAssetSerialNumber, 
+        COA.counterpartAssetManufacturerId,
+        COA.counterpartAssetItemClass, 
+        COA.counterpartAssetSourceSiteId, 
+        COA.counterpartAssetCustomerNumber, 
+        COA.originalAssetId,
+        AC.AGREEMENT_ID
+    FROM 
+        ContractsForOriginalAssets COA
+    LEFT JOIN 
+        dads_run.svc_agreement_contract AC ON AC.CUSTOMER_CONTRACT_ID = COA.contractId
+),
+
+AgreementIdentifier AS (
+    SELECT
+        AC.CUSTOMER_CONTRACT_ID AS contractId, 
+        AC.AGREEMENT_ID AS agreement_id, 
+        AI.AGREEMENT_IDENTIFIER_VALUE AS counterpartAgreementId, 
+        AC.CUSTOMER_CONTRACT_ID AS counterpartAgreementContractId
+    FROM 
+        dads_run.svc_agreement_contract AC
+    JOIN 
+        dads_run.svc_agreement_identifier AI ON AC.AGREEMENT_ID = AI.AGREEMENT_ID
+    WHERE 
+        AI.IDENTIFIER_TYPE_ID IN (111, 112)
+),
+
+CombinedAgreementContract AS (
+    SELECT
+        AC.counterpartAssetId,
+        AC.counterpartAssetSerialNumber,
+        AC.counterpartAssetManufacturerId,
+        AC.counterpartAssetItemClass,
+        AC.counterpartAssetSourceSiteId,
+        AC.counterpartAssetCustomerNumber,
+        AC.originalAssetId,
+        AC.contractItemNumber,
+        AC.AGREEMENT_ID,
+        AC.contractId,
+        AC.contractSourceSiteId,
+        A.counterpartAgreementId,
+        A.counterpartAgreementContractId,
+        CASE
+            WHEN A.counterpartAgreementId IS NULL THEN 'Counterpart Agreement Not Found'
+            ELSE A.counterpartAgreementId
+        END AS rootCause
+    FROM 
+        AgreementCheck AC
+    LEFT JOIN 
+        AgreementIdentifier A ON AC.contractId = A.contractId
+),
+
+AgreementSource AS (
+    SELECT
+        CAC.counterpartAssetId,
+        CAC.counterpartAssetSerialNumber,
+        CAC.counterpartAssetManufacturerId,
+        CAC.counterpartAssetItemClass,
+        CAC.counterpartAssetSourceSiteId,
+        CAC.counterpartAssetCustomerNumber,
+        CAC.originalAssetId,
+        CAC.contractItemNumber,
+        CAC.AGREEMENT_ID,
+        CAC.contractId,
+        CAC.counterpartAgreementId,
+        CAC.contractSourceSiteId,
+        ACP.CUSTOMER_PRODUCT_ID AS counterpartAgreementAssetId,
+        AG.SOURCE_SITE_ID AS counterpartAgreementSourceSiteId,
+        AC.CUSTOMER_CONTRACT_ID AS counterpartAgreementContractId,
+        CASE
+            WHEN ACP.CUSTOMER_PRODUCT_ID IS NULL THEN 'Missing Agreement/Asset Relationship'
+            WHEN AG.AGREEMENT_ID IS NULL THEN 'Counterpart Agreement Linked to Non-Mapped Asset'
+        END AS rootCause
+    FROM 
+        CombinedAgreementContract CAC
+    LEFT JOIN 
+        dads_run.svc_asset_agreement AG ON AG.AGREEMENT_ID = CAC.counterpartAgreementId
+    LEFT JOIN 
+        dads_run.svc_agreement_contract AC ON AC.AGREEMENT_ID = CAC.counterpartAgreementId
+    LEFT JOIN 
+        dads_run.svc_agreement_customer_product ACP ON ACP.AGREEMENT_ID = CAC.counterpartAgreementId
+),
+
+PartyAddress AS (
+    SELECT
+        PA.CUSTOMER_NUM,
+        PA.UCID,
+        PAA.CUSTOMER_PRODUCT_ID, 
+        PAA.PARTY_ADDRESS_ID,
+        PAA.AGREEMENT_ID AS PARTY_ADDRESS_ASSET_AGREEMENT_ID,
+        PAA.cust_num AS partyAddressCustomerNumber
+    FROM 
+        dads_run.svc_cust_prod_party_loc_all PAA
+    JOIN 
+        dads_run.svc_party_loc_all PA ON PAA.PARTY_ADDRESS_ID = PA.PARTY_ADDRESS_ID
+),
+
+PartyLocationCheck AS (
+    SELECT
+        C.counterpartAssetId,
+        C.counterpartAssetSerialNumber,
+        C.counterpartAssetManufacturerId,
+        C.counterpartAssetItemClass,
+        C.counterpartAssetSourceSiteId,
+        C.counterpartAssetCustomerNumber,
+        C.originalAssetId,
+        C.contractItemNumber,
+        C.AGREEMENT_ID,
+        C.contractId,
+        C.counterpartAgreementId,
+        C.counterpartAgreementSourceSiteId,
+        C.contractSourceSiteId,
+        PA.CUSTOMER_NUM,
+        PA.UCID,
+        PA.CUSTOMER_PRODUCT_ID, 
+        PA.PARTY_ADDRESS_ID,
+        PA.PARTY_ADDRESS_ASSET_AGREEMENT_ID,
+        PA.partyAddressCustomerNumber,
+        CASE
+            WHEN PA.PARTY_ADDRESS_ID IS NULL OR (C.counterpartAgreementSourceSiteId = 6 AND (PA.UCID IS NULL OR PA.UCID < 1)) 
+                OR (C.counterpartAgreementSourceSiteId <> 6 AND PA.CUSTOMER_NUM IS NULL OR PA.CUSTOMER_NUM < 1) THEN 'Party Location not found'
+            ELSE NULL
+        END AS rootCause
+    FROM 
+        AgreementSource C
+    LEFT JOIN 
+        PartyAddress PA ON PA.PARTY_ADDRESS_ASSET_AGREEMENT_ID = C.counterpartAgreementId
+),
+
+FinalResult AS (
+    SELECT
+        C.counterpartAssetId,
+        C.counterpartAssetSerialNumber,
+        C.counterpartAssetManufacturerId,
+        C.counterpartAssetItemClass,
+        C.counterpartAssetSourceSiteId,
+        C.counterpartAssetCustomerNumber,
+        C.originalAssetId,
+        C.contractItemNumber,
+        C.AGREEMENT_ID,
+        C.contractId,
+        C.counterpartAgreementId,
+        C.counterpartAgreementSourceSiteId,
+        PA.CUSTOMER_NUM,
+        PA.UCID,
+        PA.CUSTOMER_PRODUCT_ID,
+        PA.PARTY_ADDRESS_ID,
+        IIM.EMC_ITEM_NUM AS itemMaterialMapping,
+        CASE 
+            WHEN PA.PARTY_ADDRESS_ID IS NULL AND (C.counterpartAssetSourceSiteId = 6 AND (PA.UCID IS NULL OR PA.UCID < 1)) 
+                OR (C.counterpartAssetSourceSiteId <> 6 AND C.partyAddressCustomerNumber IS NULL OR C.partyAddressCustomerNumber < 1)
+                THEN 'Customer not found in counterpart asset'
+            ELSE NULL
+        END AS rootCause
+    FROM 
+        PartyLocationCheck C
+    LEFT JOIN 
+        PartyAddress PA ON PA.PARTY_ADDRESS_ID = C.counterpartAssetId
+    LEFT JOIN 
+        dads_run.svc_item_material_mapping IIM ON IIM.EMC_ITEM_NUM = C.contractItemNumber 
+        AND IIM.APPLICATION_ID = 33 
+        AND IIM.ITEM_MATERIAL_MAP_TYPE_ID IN (1, 3, 4, 5, 6)
+)
+
+SELECT * FROM FinalResult;
+
+
+
+
+
+
