@@ -3106,6 +3106,36 @@ FinalResult AS (
 SELECT * FROM FinalResult;
 
 
+--------------------------------------------------------------------------------
+SELECT
+    AID.AGREEMENT_IDENTIFIER_VALUE AS counterpartAgreementId,
+    AID.AGREEMENT_ID,
+    AID.IDENTIFIER_TYPE_ID,
+    AG.counterpartAgreementSourceSiteId,
+    AC.counterpartAgreementContractId,
+    ACP.counterpartAgreementAssetId
+FROM 
+    dads_run.svc_agreement_identifier AID
+INNER JOIN (
+    SELECT
+        SOURCE_SITE_ID AS counterpartAgreementSourceSiteId,
+        AGREEMENT_ID
+    FROM dads_run.svc_asset_agreement
+) AG ON AG.AGREEMENT_ID = AID.AGREEMENT_ID
+INNER JOIN (
+    SELECT
+        CUSTOMER_CONTRACT_ID AS counterpartAgreementContractId,
+        AGREEMENT_ID
+    FROM dads_run.svc_agreement_contract
+) AC ON AC.AGREEMENT_ID = AID.AGREEMENT_ID
+INNER JOIN (
+    SELECT
+        CUSTOMER_PRODUCT_ID AS counterpartAgreementAssetId,
+        AGREEMENT_ID
+    FROM dads_run.svc_agreement_customer_product
+) ACP ON ACP.AGREEMENT_ID = AID.AGREEMENT_ID
+WHERE 
+    AID.IDENTIFIER_TYPE_ID IN (111, 112);
 
 
 
